@@ -1,13 +1,25 @@
-// rag.js  —  Usage: node rag.js "Wie funktioniert der AES-Schlüsselaufbau?"
+// MCP server — exposes search_forth tool to Claude Code
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import OpenAI from "openai";
 import fs from "fs";
+import path from "path";
+
+const INDEX_FILE = path.join(import.meta.dirname, "forth-index.json");
+const EMBED_MODEL = "text-embedding-3-large";
+const TOP_K_DEFAULT = 6;
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const INDEX_FILE = "forth-index.json";
-const EMBED_MODEL = "text-embedding-3-large";
-const CHAT_MODEL  = "gpt-4o";
-const TOP_K       = 6;
+let index = null;
+
+function loadIndex() {
+  if (index) return index;
+  if (!fs.existsSync(INDEX_FILE)) throw new Error(`Index nicht gefunden: ${INDEX_FILE}`);
+  index = JSON.parse(fs.readFileSync(INDEX_FILE, "utf-8"));
+  return index;
+}
 
 function cosineSimilarity(a, b) {
   let dot = 0, normA = 0, normB = 0;
@@ -19,69 +31,66 @@ function cosineSimilarity(a, b) {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-function loadIndex() {
-  if (!fs.existsSync(INDEX_FILE)) {
-    console.error(`Index nicht gefunden: ${INDEX_FILE}\nZuerst: node indexer.js <pfad>`);
-    process.exit(1);
-  }
-  return JSON.parse(fs.readFileSync(INDEX_FILE, "utf-8"));
-}
-
-async function retrieve(query, index) {
-  const res = await openai.embeddings.create({
-    model: EMBED_MODEL,
-    input: [query],
-  });
+async function searchForth(query, topK = TOP_K_DEFAULT) {
+  const idx = loadIndex();
+  const res = await openai.embeddings.create({ model: EMBED_MODEL, input: [query] });
   const qVec = res.data[0].embedding;
 
-  return index
+  return idx
     .map(chunk => ({ ...chunk, score: cosineSimilarity(qVec, chunk.embedding) }))
     .sort((a, b) => b.score - a.score)
-    .slice(0, TOP_K);
+    .slice(0, topK);
 }
 
-function buildContext(chunks) {
-  return chunks.map((c, i) => {
-    const loc = `${c.file}:${c.startLine} [${c.type}]`;
-    return `--- Chunk ${i + 1} (${loc}) ---\n${c.text}`;
-  }).join("\n\n");
-}
+// ── MCP Server ──────────────────────────────────────────────────────────────
 
-async function ask(query) {
-  const index = loadIndex();
-  console.log(`Index geladen: ${index.length} Chunks\nSuche nach: "${query}"\n`);
+const server = new Server(
+  { name: "forthrag", version: "1.0.0" },
+  { capabilities: { tools: {} } }
+);
 
-  const topChunks = await retrieve(query, index);
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: [
+    {
+      name: "search_forth",
+      description:
+        "Durchsucht die Forth-Codebase semantisch und gibt die relevantesten Code-Chunks zurück. " +
+        "Nutze dies um Definitionen, Wörter oder Konzepte in der Forth-Codebase zu finden.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Suchanfrage in natürlicher Sprache oder als Forth-Begriff",
+          },
+          top_k: {
+            type: "number",
+            description: "Anzahl der zurückgegebenen Chunks (default: 6)",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  ],
+}));
 
-  console.log("Relevanteste Chunks:");
-  topChunks.forEach((c, i) =>
-    console.log(`  ${i + 1}. [${c.type}] ${c.file}:${c.startLine}  (score: ${c.score.toFixed(4)})`)
-  );
-  console.log();
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  if (request.params.name !== "search_forth") {
+    throw new Error(`Unbekanntes Tool: ${request.params.name}`);
+  }
 
-  const context = buildContext(topChunks);
-  const systemPrompt =
-    "Du bist ein Forth-Experte. Beantworte die Frage ausschließlich auf Basis der " +
-    "bereitgestellten Code-Chunks. Zitiere relevante Wörter/Definitionen namentlich. " +
-    "Wenn die Antwort nicht aus dem Code hervorgeht, sag das klar.";
+  const { query, top_k } = request.params.arguments;
+  const chunks = await searchForth(query, top_k ?? TOP_K_DEFAULT);
 
-  const response = await openai.chat.completions.create({
-    model: CHAT_MODEL,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: `Codebase-Kontext:\n\n${context}\n\nFrage: ${query}` },
-    ],
-  });
+  const text = chunks
+    .map((c, i) => {
+      const loc = `${c.file}:${c.startLine} [${c.type}]  score: ${c.score.toFixed(4)}`;
+      return `### Chunk ${i + 1}  —  ${loc}\n\`\`\`forth\n${c.text}\n\`\`\``;
+    })
+    .join("\n\n");
 
-  const answer = response.choices[0].message.content;
-  console.log("Antwort:\n");
-  console.log(answer);
-  return answer;
-}
+  return { content: [{ type: "text", text }] };
+});
 
-const query = process.argv.slice(2).join(" ");
-if (!query) {
-  console.error("Usage: node rag.js \"<frage>\"");
-  process.exit(1);
-}
-ask(query).catch(err => { console.error(err); process.exit(1); });
+const transport = new StdioServerTransport();
+await server.connect(transport);
