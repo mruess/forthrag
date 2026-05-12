@@ -1,0 +1,4 @@
+node_modules/
+forth-index.json
+.env
+*.log
