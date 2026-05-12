@@ -24,8 +24,8 @@ async function indexCodebase(rootDir) {
 
   console.log(`${allChunks.length} Chunks gefunden, beginne Embedding...`);
 
-  // ~8192 tokens max; 4 chars/token → truncate at 24000 chars
-  const MAX_CHARS = 24000;
+  // 8192 tokens max; Forth hat viele 1-char-Tokens (!@+-; etc.) → 1 char kann 1 Token sein
+  const MAX_CHARS = 8000;
   for (const c of allChunks) {
     if (c.text.length > MAX_CHARS) c.text = c.text.slice(0, MAX_CHARS);
   }
