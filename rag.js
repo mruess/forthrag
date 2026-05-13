@@ -7,10 +7,13 @@ import fs from "fs";
 import path from "path";
 
 const INDEX_FILE = path.join(import.meta.dirname, "forth-index.json");
-const EMBED_MODEL = "text-embedding-3-large";
+const EMBED_MODEL = "nomic-embed-text";
 const TOP_K_DEFAULT = 6;
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({
+  baseURL: "http://localhost:11434/v1",
+  apiKey: "ollama",
+});
 
 let index = null;
 

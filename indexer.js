@@ -4,7 +4,10 @@ import fs from "fs";
 import path from "path";
 import { chunkForthCode } from "./forth-chunker.js";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({
+  baseURL: "http://localhost:11434/v1",
+  apiKey: "ollama",
+});
 
 async function indexCodebase(rootDir) {
   const allChunks = [];
@@ -24,8 +27,8 @@ async function indexCodebase(rootDir) {
 
   console.log(`${allChunks.length} Chunks gefunden, beginne Embedding...`);
 
-  // 8192 tokens max; Forth hat viele 1-char-Tokens (!@+-; etc.) → 1 char kann 1 Token sein
-  const MAX_CHARS = 8000;
+  // nomic-embed-text: 2048 token limit (BERT), Forth hat viele 1-char-Tokens → worst case 1 char = 1 Token
+  const MAX_CHARS = 2000;
   for (const c of allChunks) {
     if (c.text.length > MAX_CHARS) c.text = c.text.slice(0, MAX_CHARS);
   }
@@ -36,7 +39,7 @@ async function indexCodebase(rootDir) {
   for (let i = 0; i < allChunks.length; i += BATCH) {
     const batch = allChunks.slice(i, i + BATCH);
     const res = await openai.embeddings.create({
-      model: "text-embedding-3-large", // Besser für Code
+      model: "nomic-embed-text",
       input: batch.map(c => c.text),
     });
     batch.forEach((chunk, j) => {
